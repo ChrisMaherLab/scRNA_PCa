@@ -1,0 +1,250 @@
+---
+title: "Heatmap of lncRNAs associated with prostate cancer progression - Figure 3"
+output: html_notebook
+---
+
+#LOAD LIBRARIES
+```{r}
+
+
+library(TCGAWorkflowData)
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(edgeR)
+library(EnhancedVolcano)
+library(Seurat)
+library(lumi)
+library(tidyverse)
+library(ggrepel)
+library(GSVA)
+options(ggrepel.max.overlaps = Inf)
+
+```
+
+
+#LOAD TCGA PRAD ANNOTATIONS FROM GDC API
+```{r}
+#Create query for TCGA prad data
+mrna_query <- GDCquery(project = "TCGA-PRAD",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+
+#Subset normal adjacent prostate RNA-seq
+nrml_meta <- mrna_query$results[[1]] %>% dplyr::filter(sample_type == "Solid Tissue Normal")
+#GDCdownload(mrna_query, method = "api", directory = "/Users/ds/Desktop")
+```
+
+
+
+#DOWNLOAD NORMAL PROSTATE COUNTS   
+```{r}
+#Combine counts for normal prostate
+full_path <- "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Normal/harmonized/Transcriptome_Profiling/Gene_Expression_Quantification/"
+nrml_rna <- do.call(cbind, lapply(list.files(path = full_path), FUN = function(f){
+  print(paste0("processing: ",list.files(path = paste0(full_path, f))))
+  counts <- read_tsv(file = list.files(path = paste0(full_path, f), full.names = T), skip = 6, col_names = F )
+  
+  return(data.frame(f = counts[,4]))
+  
+  
+}))
+
+#Add gene symbols and sample ids
+symbols <- read_tsv(file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Normal/harmonized/Transcriptome_Profiling/Gene_Expression_Quantification/0427d696-a33d-4005-ac1d-c5363754226e/b1becd71-bbed-4a0f-af9c-94b9b2af928b.rna_seq.augmented_star_gene_counts.tsv", skip = 6, col_names = F)[,2]
+colnames(nrml_rna) <- list.files(path = full_path)
+nrml_rna$Gene <- symbols$X2
+
+#Write counts to disk
+write.table(x = nrml_rna, file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Normal/normal_rna_counts.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+
+#READ IN NORMAL PROSTATE COUNTS AND FORMAT
+```{r}
+nrml_rna <- read.table(file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Normal/normal_rna_counts.txt", header = T)
+nrml_rna <- nrml_rna[!duplicated(nrml_rna$Gene),]
+row.names(nrml_rna) <- nrml_rna$Gene 
+nrml_rna <- dplyr::select(nrml_rna, -Gene)
+#Format sample-ids
+colnames(nrml_rna) <- colnames(nrml_rna) %>% gsub(pattern = "^X*", replacement = "")
+colnames(nrml_rna) <- colnames(nrml_rna) %>% gsub(pattern = "\\.", replacement = "-")
+#Log normalize for heatmap
+nrml_rna <-  edgeR::cpm(nrml_rna, log = T) %>% t() %>% data.frame()
+#Add meta data for batch, tumor purity, and mutational status
+nrml_rna <- nrml_rna %>% mutate(id = row.names(.), batch = "Normal") %>% merge(dplyr::select(nrml_meta , c(id, cases.submitter_id) ))
+nrml_rna <- nrml_rna %>% mutate(cases = cases.submitter_id, Purity = NA, Grade_Mutational_status =NA)
+```
+
+
+
+#DOWNLOAD TCGA PRAD SAMPLE LIST (N=333)
+```{r}
+#Get sample metadata for PRAD counts
+prad_meta<- mrna_query$results[[1]] %>% dplyr::filter(sample_type == "Primary Tumor")
+#GDCdownload(mrna_query, method = "api", directory = "/Users/ds/Desktop")
+```
+
+
+
+#PROCESS PRAD COUNTS
+```{r}
+#Combine counts for PRAD samples
+full_path <- "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Tumor/harmonized/Transcriptome_Profiling/Gene_Expression_Quantification/"
+
+prad_rna <- do.call(cbind, lapply(list.files(path = full_path), FUN = function(f){
+  print(paste0("processing: ",list.files(path = paste0(full_path, f))))
+  counts <- read_tsv(file = list.files(path = paste0(full_path, f), full.names = T), skip = 6, col_names = F )
+  
+  return(data.frame(f = counts[,4]))
+  
+  
+}))
+#Add sample ids and gene symbols
+colnames(prad_rna) <- list.files(path = full_path)
+symbols <- read_tsv(file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Tumor/harmonized/Transcriptome_Profiling/Gene_Expression_Quantification/0007888f-8d96-4c01-8251-7fef6cc71596/88215dd0-5841-44f1-9393-eefd8238cbb3.rna_seq.augmented_star_gene_counts.tsv", skip = 6, col_names = F)[,2]
+prad_rna$Gene <- symbols$X2
+
+#Write to PRAD counts to disk
+write.table(x = prad_rna, file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Tumor/prad_rna_counts.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+#FORMAT PRAD COUNT DATA
+```{r}
+#Read in count data
+prad_rna <- read.table(file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Tumor/prad_rna_counts.txt", header = T)
+prad_rna <- prad_rna[!duplicated(prad_rna$Gene),]
+row.names(prad_rna) <- prad_rna$Gene 
+prad_rna <- dplyr::select(prad_rna, -Gene)
+
+#Format sample ids
+colnames(prad_rna) <- colnames(prad_rna) %>% gsub(pattern = "^X*", replacement = "")
+colnames(prad_rna) <- colnames(prad_rna) %>% gsub(pattern = "\\.", replacement = "-")
+#Log normalize for heatmap
+prad_rna <- edgeR::cpm(prad_rna, log = T) %>% t() %>% data.frame()
+prad_rna <- prad_rna %>% mutate(id = row.names(.), batch = "PRAD") %>% merge(dplyr::select(prad_meta , c(id, cases.submitter_id) ))
+
+#Add PRAD purity from GDC website - https://gdc.cancer.gov/about-data/publications/prad_2015
+anno_prad <- read.csv(file = "/Users/ds/Desktop/projects/TCGA/TCGA-PRAD-Tumor/prad_supp.csv", header = T)
+anno_prad <- anno_prad %>% dplyr::select(avgRNA_purity, PATIENT_ID, Reviewed_Gleason_sum)#Tumor purity and gleason score
+prad_rna <- inner_join(prad_rna, anno_prad, by = c("cases.submitter_id" = "PATIENT_ID")) %>% mutate(Purity = avgRNA_purity * 100, cases = cases.submitter_id, Grade_Mutational_status = Reviewed_Gleason_sum)
+
+
+```
+
+
+#FORMAT MCRPC DEEP RNA-SEQ COUNT DATA (N=74)
+```{r}
+#Download meta data for mCRPC deep RNA-seq
+anno_mcrpc <- read.table("/Users/ds/Desktop/projects/data/anno/202009_deepRNAseq_sample_full.txt", header =T)
+anno_mcrpc <- anno_mcrpc %>% dplyr::select(c(sample_id, wgs_id, biopsy_site,tumor_purity_wgs, tumor_purity_rna , tumor_purity_hist, AR))
+anno_mcrpc <- anno_mcrpc %>% mutate(cases =  sample_id, Purity = tumor_purity_rna, Grade_Mutational_status =AR) %>% dplyr::select(cases, Purity, Grade_Mutational_status)#Add tumor purity (RNA) and AR region mutational status
+
+
+#Read in count data from Featurecounts for mCRPC deep RNA-seq
+mcrpc_rna <- read.table(file = "/Users/ds/Desktop/projects/data/rna/mCRPC_RNA_counts_genename.txt", header = T)
+mcrpc_rna <- mcrpc_rna[!duplicated(mcrpc_rna$Genename),]
+row.names(mcrpc_rna) <- mcrpc_rna$Genename
+mcrpc_rna <- mcrpc_rna[,-1]
+#Log normalize for heatmap
+mcrpc_rna <- edgeR::cpm(mcrpc_rna, log = T) %>% t() %>% data.frame()
+row.names(mcrpc_rna) <- gsub("\\.", "-",  x = row.names(mcrpc_rna))
+mcrpc_rna <- mcrpc_rna %>% mutate(cases = row.names(.), batch = "mCRPC")
+#Add mCRPC purity
+mcrpc_rna <- mcrpc_rna %>% merge(anno_mcrpc)
+
+
+
+```
+
+
+#MERGE NORMAL, PRAD, AND MCRPC DATASETS
+```{r}
+#Get genes in common + cases + purity + mutational status
+query <- intersect(colnames(prad_rna), colnames(mcrpc_rna)) %>% intersect( colnames(nrml_rna))
+
+
+#Combine Normal, PRAD and mCRPC - rows are samples and columns are lncRNAs + RNA purity + batch + mutational status/gleason score
+comb_rna <- rbind( nrml_rna[,query], arrange(prad_rna[,query],Grade_Mutational_status), arrange(mcrpc_rna[,query],Grade_Mutational_status))
+#Subset for pca and tme-lncRNAs
+comb_rna <- data.frame(comb_rna[,c("batch", "Purity", "cases", "Grade_Mutational_status")], comb_rna[,colnames(comb_rna) %in% c(pca_lncrna, notpca_lncrna)])
+comb_rna <- comb_rna %>% mutate(cases = paste0(cases, ":", 1:nrow(comb_rna)))
+row.names(comb_rna) <- comb_rna$cases
+
+
+
+```
+
+
+
+
+#HEATMAP PLOT
+```{r}
+#Column/sample annotation
+anno_col <- dplyr::select(comb_rna, c(batch, Purity, Grade_Mutational_status))
+colnames(anno_col) <- c("Batch", "RNA.Tumor.Purity", "GS.Mutational.status")
+anno_col <- mutate(anno_col, GS.Mutational.status = ifelse(GS.Mutational.status == 2, "AR WT", ifelse(GS.Mutational.status == 3, "AR Gain", GS.Mutational.status)))
+norm_ids <- comb_rna %>% dplyr::filter(batch == "Normal") %>% .$cases %>% gsub(pattern = "-|:",replacement = "\\.")
+
+
+#Expression matrix
+mat <- comb_rna[,colnames(comb_rna) %in% c(up$Genes, down$Genes)] %>% t() %>% data.frame() %>% mutate(gene = row.names(.)) %>% inner_join(final_markers) %>% arrange(cluster) #Subset for up and down-regualted DEG lncRNAs (progress_DEG_analysis.RMD), merge with markers (preprocess_scrna.RMD)
+row.names(mat) <-mat$gene 
+
+
+#Row/lncRNA annotation
+anno_row <- mat %>% dplyr::select(cluster)
+colnames(anno_row) <- c("Cell.type")
+mat <- mat %>% dplyr::select(starts_with(c("TCGA", "DTB", "PR")))
+#Median of normals used for normalization (i.e logFC(gene in PRAD or mCRPC/ gene in normal))
+norm_meds <- mat[norm_ids] %>%  as.matrix() %>% rowMedians(useNames = T)
+mat <- apply(mat, 2, FUN = function(x){x - norm_meds  })
+
+#Plotting heatmap
+column_ha = HeatmapAnnotation( RNA.Tumor.Purity = anno_col$RNA.Tumor.Purity, Batch = anno_col$Batch, GS.Mutational.status = anno_col$GS.Mutational.status)
+row_ha <- rowAnnotation(Cell.type = anno_row$Cell.type, col = list(Cell.type = c("B lineage" = "darkred", "erythroid"= "black", "monocyte/macrophage" = "purple", "tumor" = "navy", "NK/T"= "darkgreen", "neutrophil" = "orange"))) 
+pdf("/Users/ds/Desktop/plot.pdf", width = 10, height = 20)
+Heatmap(matrix = mat, show_column_names = F, col  = colorRampPalette(c('navy',"white", "red"))(10), top_annotation = column_ha, cluster_columns = F,left_annotation = row_ha, row_names_gp = gpar(fontsize = 15,col = ifelse(rownames(mat) %in% c(unique(up$Genes)) , "red", ifelse(rownames(mat)  %in% c(unique(down$Genes)), "blue", "black"))), row_split = anno_row$Cell.type, name = "logFC")
+dev.off()
+
+
+```
+
+
+#NK/T LNCRNA PLOT
+```{r}
+#Read in scRNA-seq data from He et al. 2021 Nature Medicine
+bmet <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/He_scRNA/He_mCRPC.rds")
+#Subset NK/T cells
+nk.t <- subset(bmet, supercluster.for.LDSC.SEG == 'NK/T')
+Idents(nk.t) <- "cluster.dominant.cell.type"
+#Find lncRNAs enriched in NK/T cell subsets
+nk.t.markers <- FindAllMarkers(object = nk.t[row.names(nk.t) %in% linc$gene.name,], only.pos = T, verbose = T)
+#Filter for PDL1 CD8 T cells
+nk.t.markers  %>% dplyr::filter(pct.1 > 0.1 & p_val_adj < 0.1 & avg_log2FC> 1)  %>% dplyr::filter(cluster == 'CD8+ PDCD1+ T cell')
+
+#Dotplot of NK/T lncRNAs upregulated in mCRPC
+query <- up %>% dplyr::filter(Cluster == "NK/T") %>% .$Genes
+p1 <- DotPlot(object = nk.t, features = query, group.by ="cluster.dominant.cell.type" ) + coord_flip() + theme(axis.text.x = element_text(size = 15, angle = 90))+ theme( text = element_text(size = 20), axis.text.x = element_text(angle = 45, vjust = 0.5))
+#Exhausted T cell markers from He et al. 
+ex <- c("PDCD1", "HAVCR2", "TOX", "TIGIT", "ICOS", "FASLG", "LAG3", "ENTPD1","ITGAE")
+#Scoring exhausted markers in mCRPC deep RNA-seq data
+row.names(mcrpc_rna) <- mcrpc_rna$cases
+mcrpc_rna <- mcrpc_rna[,-1]
+mat <- mcrpc_rna[, colnames(mcrpc_rna) %in% c(ex, "CYTOR", "MIAT")]
+exhaust =  gsva(t(mat), gset.idx.list = list(ex), method = 'zscore')
+#Scoring MIAT and CYTOR
+gex = gsva(t(mat), gset.idx.list = list(c("CYTOR", "MIAT")), method = 'zscore')
+#Correlation plot of MIAT and CYTOR with exhausted T cell markers
+p2 <- data.frame(GEX= t(gex),Exhausted.markers=t(exhaust) ) %>% ggplot(aes(x = GEX, y = Exhausted.markers)) + geom_point() + geom_smooth(method = 'lm') + stat_cor(size = 7) + xlab("CYTOR + MIAT") + theme_classic() + theme( text = element_text(size = 20))
+#Plotting
+pdf("/Users/ds/Desktop/plot.pdf", width = 10)
+p2
+dev.off()
+
+p1
+```
+
+

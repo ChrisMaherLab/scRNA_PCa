@@ -1,0 +1,299 @@
+---
+title: "lncRNA analysis of mCRPC He et al Nature Medicine 2021 - Figure 1"
+output: html_notebook
+---
+#LOAD LIBRARIES
+```{r}
+
+library(tidyverse)
+library(Seurat)
+library(Hmisc)
+library(ggrepel)
+library(EnhancedVolcano)
+library(msigdbr)
+library(EnsDb.Hsapiens.v86)
+library(Matrix)
+library(ggpubr)
+library(tidytext)
+library(cowplot)
+library(ComplexHeatmap)
+library(circlize)
+library(harmony)
+options(ggrepel.max.overlaps = Inf)
+
+
+```
+
+#FORMAT SCRNA-SEQ DATA TO SEURAT OBJECT
+```{r}
+#Read in meta data
+anno <- read.table("/Users/ds/Desktop/scRNA_datasets/scp_metadata.tsv", sep = "\t", header = T)  
+anno <- anno[-1,]
+row.names(anno) <- anno$NAME
+
+#Read in tpm data - convert to seurat object
+tpm <- read.csv(file = "/Users/ds/Desktop/scRNA_datasets/scp_tpm.tsv", sep = "\t", header = TRUE)
+tpm <- tpm[!duplicated(tpm$GENE),]
+row.names(tpm) <- tpm$GENE
+tpm <- tpm[,-1]
+colnames(tpm) <- as.character(1:length(anno$NAME) -1)
+bmet <- CreateSeuratObject(tpm, meta.data = anno)
+bmet <- SetAssayData(object = bmet, slot = "data", new.data = Matrix(as.matrix(log1p(tpm)), sparse = T))#LogNormalize data slot
+meta <- read.csv(file = "/Users/ds/Desktop/scRNA_datasets/scp_tpm_celltypes.csv")
+bmet@meta.data <- cbind(bmet@meta.data, meta)
+
+
+#Add metadata on treatment history
+tx <- read.csv(file = "/Users/ds/Desktop/scRNA_datasets/He_NatureMedicine_tx.csv")
+tx <- tx %>% dplyr::filter(has.scRNA == "True")
+tx <- inner_join(bmet@meta.data, tx) %>% dplyr::select(c(biopsy, prior.enzalutamide, prior.abiraterone, prior.taxane, prior.platinum, prior.sipuleucel.T))
+bmet@meta.data <- cbind(bmet@meta.data, tx)
+
+
+#Write to disk
+saveRDS(object = bmet, file = "/Users/ds/Desktop/scRNA_datasets/He_mCRPC.rds")
+
+```
+
+
+
+#COMPARE LNCRNA V.S PROTEIN CODING GENE DETECTION RATE
+```{r}
+#Read in scRNA-seq data
+bmet <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/He_scRNA/He_mCRPC.rds")
+
+#Read in meta data for lncRNAs and pcg
+all_genes <- read_tsv(file = "/Users/ds/Desktop/projects/data/anno//hg38.genes.meta.tsv")
+linc <- all_genes %>% dplyr::filter(gene.biotype == "lncRNA")
+pcg <- all_genes %>% dplyr::filter(gene.biotype == "protein_coding")
+
+
+#Calculate percent of annotated lncRNAs and pcgs in He et al. 
+mat <- GetAssayData(object = bmet)
+id <- intersect(row.names(mat), linc$gene.name)
+a <- dim(mat[id,])[1] / dim(linc)[1]
+id <- intersect(row.names(mat), pcg$gene.name)
+b <- dim(mat[id,])[1] / dim(pcg)[1]
+p <- rbind(LncRNA.annotated = a, LncRNA.unannotated = 1-a, Pc.annotated = b, Pc.unnanotated = 1-b) %>% data.frame(Fraction = .) %>% mutate(Type = c("lncRNA", "lncRNA", "Protein.coding", "Protein.coding")) %>% mutate(Group= c("Annotated", "Unannotated", 'Annotated', "Unannotated")) %>% ggplot(aes(x = Type, y = Fraction, fill = Group)) + geom_col(width = 0.5) + scale_fill_manual(values = c("navy", "darkred")) + theme_classic() + theme(text = element_text(size = 20))
+ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = p, width = 10)
+
+
+#Plot CDF curves of expression for lncRNAs vs pcgs
+Idents(bmet) <- "supercluster.for.LDSC.SEG"
+a <- bmet[linc$gene.name,] %>% GetAssayData() %>% colMeans() 
+b <- bmet[pcg$gene.name,] %>% GetAssayData() %>% colMeans() 
+p <- data.frame(LncRNA = a, Protein.coding = b) %>% gather(key = "Type", value = "Average.expression") %>% ggplot(aes(x = Average.expression, color = Type)) + stat_ecdf(size = 2) + scale_color_manual(values  = c("navy", "darkred")) + theme_classic() + theme(text = element_text(size = 20))
+
+
+p
+```
+
+
+
+#LNCRNA MARKER IDENTIFICATION VIA DE TESTING - STEP 1
+```{r}
+#Find cell-type enriched lncRNAs in He et al. 
+markers <- FindAllMarkers(object = bmet[row.names(bmet) %in% linc$gene.name,], only.pos = T, verbose = T)
+markers <- markers  %>% dplyr::filter(pct.1 > 0.1 & p_val_adj < 0.1 & avg_log2FC> 1) #Filter percent diff, logFC, and adj P value
+markers <- markers[!duplicated(markers$gene),]#Filter duplicates
+
+View(markers)
+
+#Find cell-type enriched pcgs in He et al. 
+pcg_markers <- FindAllMarkers(object = bmet[row.names(bmet) %in% pcg$gene.name], only.pos = T, verbose = T)
+pcg_markers <- pcg_markers %>%  dplyr::filter(pct.1 > 0.1 & p_val_adj < 0.1 & avg_log2FC> 1) 
+pcg_markers <- pcg_markers %>%  arrange(-avg_log2FC) %>% group_by(cluster) %>% slice_head(n = 2)   #Filter percent diff, logFC, and adj P value
+pcg_markers <- pcg_markers[!duplicated(pcg_markers$gene),]#Filter duplicates
+#markers <- pcg_markers#Carry rest of analysis as same for pcgs
+
+```
+
+#FILTER MARKERS ENRICHED IN CELLTYPES PRESENT IN CHEN ET AL. 2021 NATURE CELL BIOLOGY - STEP 2
+```{r}
+#Read in marker data from Chen et al. 
+valid <- read.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/Manual.Marker.modify.txt", header = T)
+
+#Filter prostate
+other_markers <- valid %>% dplyr::filter(is.na(Epithelia) & (!is.na(BCell) | !is.na(DC)   | !is.na(Endothelia) | !is.na(Fibroblast) | !is.na(Macrophage) | !is.na(MastCell) | !is.na(Myofib) |  !is.na(Neutrophil) | !is.na(pDC) | !is.na(PlasmaCell) | !is.na(TCell)   )) 
+other_markers <- other_markers  %>% dplyr::select(-ends_with(".p_val_adj")) %>% gather(key  = "Cell", value = "logFC", -markers.gene) %>% group_by(Cell) %>% dplyr::filter(logFC>1) %>% .$markers.gene %>% unique()
+a <- markers  %>% dplyr::filter(cluster == "tumor") %>% dplyr::filter(!gene %in% other_markers) %>% arrange(-avg_log2FC) 
+
+#Filter B cell lineage
+other_markers <- valid %>% dplyr::filter( (is.na(BCell) & is.na(PlasmaCell))   & (!is.na(Epithelia) | !is.na(DC)   | !is.na(Endothelia) | !is.na(Fibroblast) | !is.na(Macrophage) | !is.na(MastCell) | !is.na(Myofib) |  !is.na(Neutrophil) | !is.na(pDC) |  !is.na(TCell)   )) 
+other_markers <- other_markers  %>% dplyr::select(-ends_with(".p_val_adj")) %>% gather(key  = "Cell", value = "logFC", -markers.gene) %>% group_by(Cell) %>% dplyr::filter(logFC>1) %>% .$markers.gene %>% unique()
+b <- markers  %>% dplyr::filter(cluster == "B lineage" ) %>% dplyr::filter(! gene %in% other_markers) %>% arrange(-avg_log2FC) 
+
+
+
+#Filter NK/T cell
+other_markers <- valid %>% dplyr::filter(is.na(TCell) & (!is.na(Epithelia) | !is.na(DC)   | !is.na(Endothelia) | !is.na(Fibroblast) | !is.na(Macrophage) | !is.na(MastCell) | !is.na(Myofib) |  !is.na(Neutrophil) | !is.na(pDC) | !is.na(PlasmaCell) | !is.na(BCell)   )) 
+other_markers <- other_markers  %>% dplyr::select(-ends_with(".p_val_adj")) %>% gather(key  = "Cell", value = "logFC", -markers.gene) %>% group_by(Cell) %>% dplyr::filter(logFC>1) %>% .$markers.gene %>% unique()
+c <- markers  %>% dplyr::filter(cluster == "NK/T") %>% dplyr::filter(! gene %in% other_markers) %>% arrange(-avg_log2FC) 
+
+
+#Filter neutrophil cell
+other_markers <- valid %>% dplyr::filter(is.na(Neutrophil) & (!is.na(Epithelia) | !is.na(DC)   | !is.na(Endothelia) | !is.na(Fibroblast) | !is.na(Macrophage) | !is.na(MastCell) | !is.na(Myofib) |  !is.na(TCell) | !is.na(pDC) | !is.na(PlasmaCell) | !is.na(BCell)   )) 
+other_markers <- other_markers  %>% dplyr::select(-ends_with(".p_val_adj")) %>% gather(key  = "Cell", value = "logFC", -markers.gene) %>% group_by(Cell) %>% dplyr::filter(logFC>1) %>% .$markers.gene %>% unique()
+d <- markers  %>% dplyr::filter(cluster == "neutrophil") %>% dplyr::filter(! gene %in% other_markers) %>% arrange(-avg_log2FC) 
+
+
+#Filter monocyte/macrophage cell
+other_markers <- valid %>% dplyr::filter(is.na(Macrophage) & (!is.na(Epithelia) | !is.na(DC)   | !is.na(Endothelia) | !is.na(Fibroblast) | !is.na(Neutrophil) | !is.na(MastCell) | !is.na(Myofib) |  !is.na(TCell) | !is.na(pDC) | !is.na(PlasmaCell) | !is.na(BCell)   )) 
+other_markers <- other_markers  %>% dplyr::select(-ends_with(".p_val_adj")) %>% gather(key  = "Cell", value = "logFC", -markers.gene) %>% group_by(Cell) %>% dplyr::filter(logFC>1) %>% .$markers.gene %>% unique()
+e <- markers  %>% dplyr::filter(cluster == "monocyte/macrophage" ) %>% dplyr::filter(! gene %in% other_markers) %>% arrange(-avg_log2FC) 
+
+
+#Filter erythroid cell - no erythroid markers in this data set
+f <- markers  %>% dplyr::filter(cluster == "erythroid" ) %>% arrange(-avg_log2FC) 
+
+#Dataframe of filtered markers based on Chen et al. 
+filt_markers <- rbind(a,b,c,d,e,f)
+
+
+```
+
+
+#FILTER MARKERS ENRICHED IN CELLTYPES IN KFOURY ET AL 2021 CANCER CELL - STEP 3
+```{r}
+#Read in scRNA-seq data from Kfoury et al. 
+bmcrpc <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/seurat/Kfoury_bmCRPC_scRNA.rds")
+Idents(bmcrpc) <- "cells"
+valid_kfoury <-FindAllMarkers(object = bmcrpc[row.names(bmcrpc) %in% linc$gene.name,], only.pos = T, verbose = T)
+#valid_kfoury <-FindAllMarkers(object = bmcrpc[row.names(bmcrpc) %in% pcg$gene.name,], only.pos = T, verbose = T)
+
+#Identify cell-specific lncRNAs/pcgs
+#valid_kfoury <-FindAllMarkers(object = bmcrpc, only.pos = T, verbose = T)
+valid_kfoury <- valid_kfoury  %>% dplyr::filter(pct.1 > 0.1 & p_val_adj < 0.1 & avg_log2FC> 1) %>%  arrange(-avg_log2FC) 
+valid_kfoury <- valid_kfoury[!duplicated(valid_kfoury$gene),]#Filter duplicates
+
+
+#Filter prostate
+other_markers <- valid_kfoury %>% dplyr::filter(cluster != "Tumor")  %>% .$gene
+a <- filt_markers %>% dplyr::filter(cluster == "tumor") %>% dplyr::filter( !gene %in% other_markers )
+
+
+#Filter NK/T cells
+other_markers <- valid_kfoury %>% dplyr::filter(! cluster %in% c("CTL-1", "CTL-2", "NK", "NKT", "CD4+ Naive" ,"Treg Active","Th1/17","Treg Resting","CD8+ Naive"))  %>% .$gene
+b <- filt_markers %>% dplyr::filter(cluster == "NK/T") %>% dplyr::filter( !gene %in% other_markers )
+
+#Filter B lineage cells
+other_markers <- valid_kfoury %>% dplyr::filter(! cluster %in% c("Mature B","memBcell" ,"Pro-B","Immature B cells"))  %>% .$gene
+c <- filt_markers %>% dplyr::filter(cluster == "B lineage") %>% dplyr::filter( !gene %in% other_markers )
+
+#Filter monocyte/macrophage cells
+other_markers <- valid_kfoury %>% dplyr::filter(! cluster %in% c("Mono3" , "mDC"  ,"TIM" ,"TAM" ,"Mono2"  ,"Mono1","Monocyte prog")) %>%  .$gene
+d <- filt_markers %>% dplyr::filter(cluster == "monocyte/macrophage") %>% dplyr::filter( !gene %in% other_markers )
+
+
+#Filter erythroid cells
+other_markers <- valid_kfoury %>% dplyr::filter(! cluster %in% c("Erythroid")) %>% .$gene
+e <- filt_markers %>% dplyr::filter(cluster == "erythroid") %>% dplyr::filter( !gene %in% other_markers )
+
+
+#No granulocytes in this dataset
+f <- filt_markers %>% dplyr::filter(cluster == "neutrophil")
+
+#Data frame from filtering using Chen et al. and Kfoury et al. 
+final_markers <- rbind(a,c,b,f,d,e)
+
+
+
+```
+
+#COMPARE TOP PCG WITH LNCRNAS IN CELL SPECIFICITY
+```{r}
+
+#Select top 2 pcg markers
+select_pcg_markers <- pcg_markers %>%  arrange(-avg_log2FC) %>% group_by(cluster) %>% slice_head(n = 2)
+
+
+
+#Select top 2 lncrna markers - compare to pcgs
+compare_markers <- rbind(dplyr::filter(select_pcg_markers, cluster == 'tumor'), dplyr::filter(final_markers, cluster == 'tumor'),dplyr::filter(select_pcg_markers, cluster == "B lineage") , dplyr::filter(final_markers, cluster == 'B lineage'),dplyr::filter(select_pcg_markers, cluster == "NK/T"),dplyr::filter(final_markers, cluster == 'NK/T'),dplyr::filter(select_pcg_markers, cluster == "neutrophil"),dplyr::filter(final_markers, cluster == 'neutrophil'),dplyr::filter(select_pcg_markers, cluster == "monocyte/macrophage"),dplyr::filter(final_markers, cluster == 'monocyte/macrophage'),dplyr::filter(select_pcg_markers, cluster == "erythroid"),dplyr::filter(final_markers, cluster == 'erythroid'))
+```
+
+
+#SUBSET PCA (TUMOR)-ENRICHED LNCRNAS AND TME-ENRICHED LNCRNAS
+```{r}
+
+set.seed(111)
+#Pca-enriched lncRNAs
+pca_lncrna <- final_markers %>%  dplyr::filter(cluster == "tumor") %>% arrange(-avg_log2FC)  %>% .$gene
+
+#TME-enriched lncRNAs
+notpca_lncrna <- final_markers %>% dplyr::filter(!gene %in% pca_lncrna) %>% arrange(-avg_log2FC) %>% .$gene
+notpca_lncrna_ds <- sample(notpca_lncrna, length(pca_lncrna))#Downsampled version
+
+
+#Background set of lncRNAs
+other_lncrna <- linc %>% dplyr::filter(!gene.name %in% final_markers$gene) %>% .$gene.name
+other_lncrna_ds <- sample(other_lncrna, length(pca_lncrna))#Downsampled version
+
+
+
+```
+
+
+#HEATMAP OF CELL-SPECIFIC LNCRNAS
+```{r}
+#Scale data for lncrnas/pcg markers in seurat object
+bmet <- ScaleData(object = bmet, features = final_markers$gene)
+#bmet <- ScaleData(object = bmet, features = pcg_markers$gene)
+
+#Plot
+pdf("/Users/ds/Desktop/plot.pdf", height = 10, width = 8)
+DoHeatmap(object = bmet, features = final_markers$gene, assay = "RNA", slot = "scale.data",   )+ theme(axis.text.y = element_text(size = 0), axis.text.x = element_text(size = 0))
+dev.off()
+
+
+
+```
+
+
+#DOTPLOT OF TOP 2 PCG WITH TOP2 LNCRNA MARKERS PER CELLTYPE
+```{r}
+#Select top pcgs/lncrnas per celltype
+top <-compare_markers  %>% arrange(-avg_log2FC) %>% group_by(cluster)  %>% dplyr::slice(1:4) %>% .$gene
+names(top) <- compare_markers  %>% arrange(-avg_log2FC) %>% group_by(cluster)  %>% dplyr::slice(1:4) %>% .$cluster
+
+#Dotplot
+pdf("/Users/ds/Desktop/plot.pdf", width = 15, height = 10)
+DotPlot(object = bmet, features = top, group.by = "supercluster.for.LDSC.SEG") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 20), text = element_text(size = 20), axis.text.y = element_text(size = 20)) + coord_flip() + theme(axis.text.y.left  = element_text(color = rep(c('red', 'red', 'blue', 'blue'), 5)))
+dev.off()
+```
+
+#WRITE LNCRNA MARKERS TO CSV FILE
+```{r}
+# write.table(x = final_markers, file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/final_markers_mCRPC_He.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+# write.table(x = final_markers, file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/final_markers_pcg_mCRPC_He.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+final_markers <- read.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/final_markers_mCRPC_He.txt", header = T, sep = "\t")
+pcg_markers <- read.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/final_markers_pcg_mCRPC_He.txt", header = T, sep = "\t")
+
+#Write lncrna markers to Sup Table 1
+#write.csv(x = final_markers, file = "/Users/ds/Desktop/Supplementary.Table1.csv",quote = F, row.names = F)
+
+
+```
+
+
+#UMAP PLOTTING OF SELECT LNCRNA MARKERS
+```{r}
+
+
+#Embed cells in UMAP space
+bmet <-bmet %>% FindVariableFeatures( nfeatures = 2000) %>% ScaleData() %>%RunPCA() %>%  RunHarmony( "biosample_id", seed = 123)
+bmet <- RunUMAP(bmet, reduction = "harmony", dims = 1:40) %>% FindNeighbors(reduction = "harmony", dims = 1:40) %>% FindClusters(resolution = 0.6, algorithm = 1, random.seed =123) 
+Idents(bmet) <- "supercluster.for.LDSC.SEG"
+
+#UMAP Plot
+pdf("/Users/ds/Desktop/plot.pdf", width = 10)
+FeaturePlot(object = bmet, features =c("SCHLAP1", "SMIM25"), label = T, repel = T, label.size = 5)
+dev.off()
+
+
+
+
+```
+
+
+

@@ -1,0 +1,202 @@
+---
+title: "Analysis of lncRNA associated with AR region amplifications and enzalutamide - Figure 4"
+output: html_notebook
+---
+
+#LOAD LIBRARIES
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(org.Hs.eg.db)
+library(GSVA)
+library(ComplexHeatmap)
+library(ggrepel)
+```
+
+
+#READ IN METADATA FOR RNA-SEQ
+```{r}
+
+#Meta data for Deep RNA-seq
+anno <- read.table("/Users/ds/Desktop/projects/data/anno/202009_deepRNAseq_sample_full.txt", header =T)
+anno <- anno %>% dplyr::select(c(sample_id, wgs_id, biopsy_site, disease_type_SIG_GEX, ID_patient, AR,tumor_purity_rna)) 
+cf <- read.table("/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/CIBERSORTx_Job33_Adjusted.txt", sep = "\t", header = T)
+cf$sample_id <- gsub("\\.", "-", cf$Mixture)
+row.names(cf) <- cf$Mixture
+cf <- inner_join(x = cf, y = anno, by  = c("sample_id" = "sample_id"))
+row.names(cf) <- cf$sample_id
+#Omit samples without WGS data
+cf <- na.omit(cf)
+#Format AR region amplifications v.s WT
+cf$AR <- ifelse(cf$AR == 3, "Gain", "WT")
+
+```
+
+
+#EDGER DIFFERENTIAL GENE EXPRESSION ANALYSIS OF LNCRNAS AND AR STATUS
+```{r}
+#Read in raw counts, convert to matrix with rows as gene symbols, columns as samples
+counts <- read.table("/Users/ds/Desktop/projects/data/rna/mCRPC_RNA_counts_genename.txt", header = T)
+counts <- counts[!duplicated(counts$Genename),]
+row.names(counts) <- counts$Genename
+counts <- counts[,-1] %>% as.matrix()
+colnames(counts) <- gsub("\\.", "-", colnames(counts))  
+
+
+#Keep matching sample ids of RNA-seq and WGS for cmp annotation
+ids <- intersect(colnames(counts),row.names(cf))
+counts <- counts[,ids]
+cf <- cf[ids,]
+
+
+#Create dge object - create counts matrix and sample anno df with library sizes
+x <- DGEList(counts = counts)
+
+#Add cluster variable to designate group membership to sample df
+x$samples <- cbind(x$samples, dplyr::select(cf, c( biopsy_site, disease_type_SIG_GEX, AR,tumor_purity_rna )))
+
+#Remove genes with low expression across samples
+keep.exprs <- filterByExpr(x, min.count = 5)#Min count of 5
+x <- x[keep.exprs,, keep.lib.size = F]
+
+#Calculate effective library size using EdgeR TMM method
+x <- calcNormFactors(x, method = "TMM")
+
+#Create design matrix (w/o intercept) specifying group membership - tumor purity as covariate
+design <- model.matrix(~ 0 + AR + tumor_purity_rna, data = cf) 
+colnames(design) <- c("Gain", "WT", "Purity") 
+
+# #Create contrasts to calculate
+contr.matrix <- makeContrasts(Gain - WT, levels = colnames(design))
+
+
+#Normalize counts to log CPM using voom
+v <- voom(x, design = design)
+
+#Fit LM according to design
+vfit <- lmFit(v, design)
+
+#Calculate contrasts i.e logFC for genes across groups
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+
+#Calculate t-stats and p vals using Emp bayes method
+efit <- eBayes(vfit)
+
+
+#Get list of all genes, arrange in decreasing order
+bulk_deg <- topTable(efit, number = Inf, coef = 1) %>% data.frame(Genes = row.names(.))  %>% arrange(-logFC) 
+
+#DE lncRNAs - FDR 25% and abs logFC > 1
+bulk_deg <- bulk_deg %>% dplyr::filter(adj.P.Val < 0.25 & abs(logFC) > 1) %>% left_join( y = final_markers, by = c("Genes" = "gene"))
+#DE protein coding genes - FDR 25% and abs logFC > 1
+bulk_deg <- bulk_deg %>% dplyr::filter(adj.P.Val < 0.25 & abs(logFC) > 1) %>% left_join( y = pcg_markers, by = c("Genes" = "gene"))
+```
+
+
+#VOLCANO PLOT OF DE LNCRNAS ASSOCIATED WITH AR STATUS
+```{r}
+#Format DE results
+bulk_deg$cluster <- bulk_deg$cluster %>% as.character()
+bulk_deg <- bulk_deg %>% mutate(Cluster = ifelse(is.na(cluster), "Unknown", cluster)) %>% mutate(Alpha = ifelse(Cluster == "Unknown", 0.8, 1))
+
+#Plot
+plot <- ggplot(bulk_deg, aes(x = logFC, y = -log10(adj.P.Val), color = Cluster, alpha = Alpha, label = Genes) ) + geom_point() + scale_color_manual(values = c("purple", "orange", "red", "black", "darkgreen","navy" , "grey")) + geom_hline(yintercept = -log10(0.25), linetype= 'dashed') + geom_vline(xintercept = c(-1,1), linetype = 'dashed') + geom_text_repel(data = dplyr::filter(bulk_deg, abs(logFC) > 1 &adj.P.Val < 0.25 & Cluster !="Unknown" ), force = 0.8, size = 2.5) + ggtitle(label = "Protein coding genes associated with AR region amplifications") + theme_classic()
+ggsave(plot = plot, filename = "/Users/ds/Desktop/plot.pdf", height = 5)
+
+#Write to disk
+#write.csv(x = bulk_deg, file = "/Users/ds/Desktop/Supplementary.Table4.csv",quote = F, row.names = F)
+
+#AR-upregulated pca-lncRNAs
+ar_lncrna <- bulk_deg %>% dplyr::filter( (logFC >0) & cluster == 'tumor') %>% .$Genes
+
+```
+
+
+
+#LCM-RNA-SEQ FROM WESTBROOK ET AL. 2022 NAT COMM
+```{r}
+set.seed(111)
+#Read in LCM-RNA-seq data
+lcm <- read_csv(file = "/Users/ds/Desktop/projects/data/rna/LCM_enza_WCDT_TPM.csv", col_names = T)
+colnames(lcm)[1] <- "Gene"
+#Add metadata
+meta <- read_csv(file = "/Users/ds/Desktop/projects/data/anno/LCM_enza_WCDT_meta.csv", col_names = c("Patient.ID", "Timepoint", "Biopsy.site", "Same.lesion", "PSA", "TOS", "AR.VIPER", "AR.GEX", "Aggarwal", "Labrecque" ))
+a <- data.frame(lcm) %>% dplyr::filter(Gene %in% c(ar_lncrna)) 
+row.names(a) <- a$Gene
+a <- a %>% dplyr::select(-Gene) %>% log1p() 
+df <- data.frame(Patient.ID = colnames(a), t(a)) %>% merge(meta)
+row.names(df) <- df$Patient.ID
+df$AR.GEX <- as.numeric(df$AR.GEX)#AR gene expression
+df$AR.VIPER <- as.numeric(df$AR.VIPER)#AR VIPER (regulon activity)
+df$Sample <- gsub(pattern = "DTB|_[0-9]*", replacement = "", x = df$Patient.ID)
+
+#Heatmap plotting
+row_ha = HeatmapAnnotation( PSA = df$PSA, AR.GEX = df$AR.GEX, AR.VIPER = df$AR.VIPER, Aggarwal.cluster = df$Aggarwal, Labrecque.cluster = df$Labrecque, Sample = df$Sample)
+mat <- df[,colnames(df) %in% ar_lncrna] %>% scale() %>% t()
+mat <- ramify::clip(mat, .min = -2, .max = 2)
+pdf("/Users/ds/Desktop/plot.pdf", height = 10, width = 10)
+Heatmap(matrix = mat, show_column_names = F, col  = colorRampPalette(c('navy',"white", "red"))(10), top_annotation  = row_ha, cluster_columns = T, name = "Z score", column_names_gp = gpar(fontsize = 10), height = unit(5, 'cm'), cluster_rows = F)
+dev.off()
+
+
+
+
+
+
+```
+
+
+
+#ASSOCATION OF AR-AMP PCA-LNCRNAS, ENZA RESPONSE, AR GEX AND AR VIPER
+```{r}
+#Read in LCM-RNA-seq data
+lcm <- read_csv(file = "/Users/ds/Desktop/projects/data/rna/LCM_enza_WCDT_TPM.csv", col_names = T)
+colnames(lcm)[1] <- "Gene"
+lcm <- data.frame(lcm)
+lcm <- lcm[!duplicated(lcm$Gene),]
+row.names(lcm) <- lcm$Gene
+lcm <- lcm[,-1]
+lcm <- as.matrix(lcm) %>% log1p()
+
+
+#Add metadata
+meta <- read_csv(file = "/Users/ds/Desktop/projects/data/anno/LCM_enza_WCDT_meta.csv", col_names = c("Patient.ID", "Timepoint", "Biopsy.site", "Same.lesion", "PSA", "TOS", "AR.VIPER", "AR.GEX", "Aggarwal", "Labrecque" ))
+
+#AR lncRNA activity
+gsva.es <- gsva(lcm, gset.idx.list = list(ar_lncrna), method = 'zscore')
+
+
+#Plotting correlation AR lncRNA and AR GEX and AR VIPER
+df <- gsva.es %>% t() %>% data.frame(Patient.ID = row.names(.), Pca.lncrna = .) %>% merge(meta)
+row.names(df) <- df$Patient.ID
+df$AR.GEX <- as.numeric(df$AR.GEX)
+df$AR.VIPER <- as.numeric(df$AR.VIPER)
+
+
+
+p1 <- df %>% dplyr::select(c(Pca.lncrna,AR.VIPER, AR.GEX)) %>% gather(key = "Signature", value = "GEX", -Pca.lncrna) %>% ggplot(aes(x = Pca.lncrna, y = GEX, color = Signature)) %>% facet(facet.by = "Signature", panel.labs.font = list(face = "bold", size = 20), scales = 'free') + geom_point() + geom_smooth(method = "lm") + stat_cor(size = 7) + scale_color_manual(values = c("navy", "darkred")) + theme_classic() + xlab("AR upregulated Pca-lncRNAs") + theme(axis.text.x = element_text( color="black", size=0, angle=45), text = element_text(size = 20))
+pdf("/Users/ds/Desktop/plot.pdf", width = 7)
+p4
+dev.off()
+
+
+#Boxplot for AR lncRNAs at Baseline v.s Progression on Enza - split by PSA response (>50% decline in PSA at 12 mo)
+p2 <- ggboxplot(
+  dplyr::filter(df, PSA != "Unknown"), x = "Timepoint", y = "Pca.lncrna", fill = "darkred", alpha = 0.5,
+  facet.by = "PSA", draw_quantiles = 0.5, add = 'jitter')+ stat_compare_means(paired = T, method = 't.test', label.x.npc = 0.5) + ylab("AR regulated Pca\n protein coding genes") + theme( text = element_text(size = 20))
+p2
+
+#Boxplot for AR lncRNAs and 3 AR+/NE- to AR-/NE- converters
+p3 <- dplyr::filter(df,grepl(pattern ="DTB_080|DTB_135|DTB_210", x = Patient.ID)) %>% mutate(Group = "Converters") %>% ggboxplot( , x = "Timepoint", y = "AR.VIPER", fill = "darkblue", alpha = 0.5, draw_quantiles = 0.5,add = "jitter" , facet.by = "Group", width = 0.5) + stat_compare_means(paired = T, method = 't.test', label.x.npc = 0.5) + ylab("AR VIPER score") + theme( text = element_text(size = 20))
+
+
+p4 <- dplyr::filter(df,grepl(pattern ="DTB_080|DTB_135|DTB_210", x = Patient.ID)) %>% mutate(Group = "Converters") %>% ggboxplot( , x = "Timepoint", y = "Pca.lncrna", fill = "darkblue", alpha = 0.5, draw_quantiles = 0.5,add = "jitter" , facet.by = "Group", width = 0.5) + stat_compare_means(paired = T, method = 't.test', label.x.npc = 0.5) + ylab("AR regulated Pca\n protien coding genes") + theme( text = element_text(size = 20))
+
+
+```
+
+
+
+
+

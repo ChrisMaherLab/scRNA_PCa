@@ -1,0 +1,244 @@
+---
+title: "Analysis of lncRNAs associated with adeno v.s NEPC histology - Figure 6"
+output: html_notebook
+---
+
+#LOAD LIBRARIES
+```{r}
+library(Seurat)
+library(ggrepel)
+library(msigdbr)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(pROC)
+library(edgeR)
+library(Signac)
+```
+
+
+
+#DEG ANALYSIS OF LNCRNAS AND MCRPC HISTOLOGY
+```{r}
+#Read in scRNA-seq data from He et al. 2021 Nature Medicine
+bmet <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/He_scRNA/He_mCRPC.rds")
+#Set idents to metastatic site
+Idents(bmet) <- "organ__ontology_label"
+#DEG between bone/ln (adeno) and liver (sc)
+sc_deg <- FindMarkers(object = bmet, ident.1 = c("bone tissue", 'lymph node'), ident.2 = 'liver', only.pos = F, verbose = T)
+#Subset genes with FDR 10% and abs log2FC > 1
+sc_deg <-  sc_deg %>% dplyr::filter(abs(avg_log2FC) > 1 & p_val_adj < 0.1)  %>% mutate(Genes = row.names(.)) %>%  left_join( y = final_markers, by = c("Genes" = "gene")) %>% arrange(avg_log2FC.x)
+
+#Write results to disk
+#write.csv(x = sc_deg, file = "/Users/ds/Desktop/Supplementary.Table6.csv",quote = F, row.names = F)
+
+#Subst DE lncrnas/pcg
+sc_pcg_deg <- sc_deg %>% dplyr::filter(Genes %in% pcg$gene.name)
+sc_deg <- sc_deg %>% dplyr::filter(Genes %in% linc$gene.name)
+
+
+```
+
+
+#PROCESSING DEEP RNA-SEQ DATA
+```{r}
+
+#Read in deep RNA-seq data
+mcrpc_rna <- read.table(file = "/Users/ds/Desktop/projects/data/rna/mCRPC_RNA_counts_genename.txt", header = T)
+mcrpc_rna <- mcrpc_rna[!duplicated(mcrpc_rna$Genename),]
+row.names(mcrpc_rna) <- mcrpc_rna$Genename
+mcrpc_rna <- mcrpc_rna[,-1]
+#Remove lowly expressed genes - min count 5
+keep.exprs <- filterByExpr(as.matrix(mcrpc_rna),min.count = 5 )
+mcrpc_rna <- mcrpc_rna[keep.exprs,]
+#Log normalize for heatmap
+mcrpc_rna <- edgeR::cpm(mcrpc_rna, log = T) %>% t() %>% data.frame()
+row.names(mcrpc_rna) <- gsub("\\.", "-",  x = row.names(mcrpc_rna))
+
+
+#Read in annotation genomic metadata
+anno <- read.table("/Users/ds/Desktop/projects/data/anno/202009_deepRNAseq_sample_full.txt", header =T)
+anno <- anno %>% dplyr::select(c(sample_id, wgs_id, biopsy_site, disease_type_SIG_GEX, ID_patient,tumor_purity_rna, enza ))
+```
+
+
+
+#PLOTTING
+```{r}
+
+#Plot volcano plot
+plot <- ggplot(sc_pcg_deg, aes(x = avg_log2FC.x, y = -log10(p_val_adj.x), label = Genes, color = cluster) ) + geom_point(data = dplyr::filter(sc_deg, abs(avg_log2FC.x) > 1 & p_val_adj.x < 0.1), aes(color = cluster)) + scale_color_manual(values = c("purple", "orange", "red", "black", "darkgreen", "navy", "grey")) + geom_hline(yintercept = -log10(0.1), linetype= 'dashed') + geom_vline(xintercept = c(-1,1), linetype = 'dashed') + geom_text_repel(data = dplyr::filter(sc_deg, abs(avg_log2FC.x) > 1 & p_val_adj.x < 0.1 ), force = 1, size = 3) + xlab("avg_log2FC") + ylab("-log10(p_val_adj)") + theme_classic() + theme(text = element_text(size = 20))
+ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = plot, width = 10)
+
+
+#Liver met heatmap
+liver <- subset(bmet,organ__ontology_label == 'liver' )
+
+
+#Subset sc and adeno lncRNAs
+sc_sig <- dplyr::filter(sc_deg,avg_log2FC.x<0 )$Genes
+adeno_sig <- dplyr::filter(sc_deg,avg_log2FC.x>0 )$Genes
+
+
+#Find sc lncrnas enriched in cell types in liver met
+Idents(liver)  <- "supercluster.for.LDSC.SEG"
+order <- FindAllMarkers(object = liver, features =sc_sig, verbose = T, only.pos = T)
+order <- order%>% group_by(cluster) %>% arrange(-avg_log2FC, .by_group = T)
+
+#Plot heatmap
+liver <- ScaleData(object = liver, features =dplyr::filter(sc_deg,avg_log2FC.x<0 )$Genes )
+pdf("/Users/ds/Desktop/plot.pdf", width = 12, height = 10)
+DoHeatmap(object = liver, features = order$gene) + theme(text = element_text(size = 15))
+dev.off()
+
+
+```
+
+#PATHWAY ANALYSIS OF LNCRNAS ASSOCIATED WITH HISTOLOGY
+```{r}
+#Obtain Hallmark pathways
+all_gene_sets = msigdbr(species = "Homo sapiens")
+gs <- all_gene_sets %>% dplyr::filter(gs_cat == "H")
+pathways <- gs$gs_name %>% unique()
+
+#Read in scRNA-seq data
+bmet <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/He_scRNA/He_mCRPC.rds")
+#Set Idents to samples
+Idents(bmet) <- "biosample_id"
+#Convert to pseudo-bulk data per sample
+mat =  AverageExpression(object = bmet)
+
+
+#Loop thru Hallmark pathways
+res <- do.call(rbind, lapply(pathways, FUN = function(p){
+  
+  print(p)
+    #Score Hallmark pathways, and RB1 loss genes 
+  g <- gs %>% dplyr::filter(gs_name == p) %>% .$gene_symbol
+  df <- mat$RNA %>% gsva( gset.idx.list = list(A = sc_sig, B = adeno_sig, C = g), method = 'zscore') %>% t() %>% data.frame()
+    #Correlate Hallmark pathway with signatures
+  df <- data.frame(Pathway = p, PCC.up = cor.test(df$A,df$C)$estimate, Pval.up = cor.test(df$A,df$C)$p.value, PCC.down = cor.test(df$B,df$C)$estimate, Pval.down = cor.test(df$B, df$C)$p.value)
+  return(df)
+}))
+
+
+
+#Plot top 10 most correlated Hallmark pathways
+res.up <- arrange(res, -PCC.up)[1:10,c("Pathway", "PCC.up")]
+colnames(res.up) <- c("Pathway", "PCC")
+
+res.down <- arrange(res, -PCC.down)[1:10,c("Pathway", "PCC.down")]
+colnames(res.down) <- c("Pathway", "PCC")
+
+p <- rbind(res.up, mutate(res.down, PCC = PCC * -1)) %>% mutate(Group = ifelse(PCC > 0, "Small cell", "Adeno")) %>% ggplot(aes(y = reorder(Pathway, PCC), x = PCC, fill = Group)) + geom_col() + xlim(c(-1,1)) + scale_x_continuous(breaks = seq(-1,1,0.1),labels = seq(-1,1,0.1) %>% abs()) + ylab("Pathway") + scale_fill_manual(values = c("navy", "darkred")) + theme_classic() + theme( text = element_text(size = 20))#,legend.position = 'none')
+
+ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = p, width = 13)
+
+
+```
+
+
+
+
+#DNAM ANALYSIS WITH ADENO/SC LNCRNAS
+```{r}
+#HMR methylation profiles from Zhou et al. Nature Genetics 2020 - summarized using MethylKit on WGBS (Aggregate_cpg.R)
+hmr <- read_table(file = "/Users/ds/Desktop/projects/data/bs/all.mcrpc.hmr.txt")
+#Meta data for samples
+meta <- read_csv(file = "/Users/ds/Desktop/projects/data/anno/Nat_Gen_sampleanno.csv")
+meta <- meta %>% mutate(wgs_id = row.names(.))
+
+#Get regions
+regions <- GRanges(linc)
+#regions <- GRanges(pcg)
+
+#Convert HMR to GRanges
+coord <- hmr$Coord %>% gsub(pattern = "\\.", replacement = "-") %>% StringToGRanges(sep = c("-", "-"))
+
+#Subset lncRNA and nearest HMR
+coord <- data.frame(linc, coord[nearest(x =  GRanges(regions), subject = coord),] ) %>% mutate(Signature = ifelse(gene.name %in% sc_sig, "SC signature", ifelse(gene.name %in% adeno_sig, "Adeno signature", "Other")))
+#coord <- data.frame(pcg[!is.na(nearest(x =  GRanges(regions), subject = coord)) ,], coord[ na.omit(nearest(x =  GRanges(regions), subject = coord)),] ) %>% mutate(Signature = ifelse(gene.name %in% sc_sig, "SC signature", ifelse(gene.name %in% adeno_sig, "Adeno signature", "Other")))
+                                                                                                      
+
+#Separate in sc HMR and adeno HMR
+sc_coord <- coord %>% dplyr::filter(Signature == "SC signature") %>% dplyr::select(c(seqnames, start.1, end)) %>% mutate(coord = paste0(seqnames, ".", start.1, ".", end)) %>% .$coord
+ad_coord <- coord %>% dplyr::filter(Signature == "Adeno signature") %>% dplyr::select(c(seqnames, start.1, end)) %>% mutate(coord = paste0(seqnames, ".", start.1, ".", end)) %>% .$coord
+
+
+#Format methylation data
+hmr <- data.frame(hmr)
+hmr <- hmr[!duplicated(hmr$Coord),]
+row.names(hmr) <- hmr$Coord
+hmr <- hmr[,-1] %>% as.matrix()
+
+
+#Score HMR activity for sc and adeno lncRNAs
+df <- hmr %>% gsva( gset.idx.list = list(SCNC.lncRNAs = sc_coord, Adeno.lncRNAs = ad_coord), method = 'zscore') %>% t() %>% data.frame()
+df <- df %>% mutate(  Sample = gsub("\\.", replacement = "-", row.names(.)) )
+
+#Merge with meta data and plot assocation with methylation and histology
+p <- df %>% merge(meta) %>% mutate(Type = ifelse(Type == "tSCNC", "SCNC", "Adeno")) %>% dplyr::select(c(Sample, SCNC.lncRNAs, Adeno.lncRNAs, Type)) %>% gather(key = "Group", value = "Dnam", -c(Sample, Type)) %>% ggboxplot(x = "Type", y = "Dnam", fill = "darkblue", alpha = 0.5, draw_quantiles = 0.5,add = "jitter",width = 0.5, facet.by = "Group") + stat_compare_means(paired = F, method = 't.test', label.x.npc = 0.5) + ylab("Methylation") + theme( text = element_text(size = 20))
+
+ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = p, )
+
+```
+
+
+#SCORING LNCRNA/PCG SIGNATURES
+```{r}
+
+#Sc/NEPC lncrna signature from Ramnarine et al. 2019 Gigascience
+nepc_lnc <- read_csv(file = "/Users/ds/Desktop/Supplement/beltran_nepc_lnc.csv", col_names = T, skip = 1)
+nepc_lnc <- nepc_lnc %>% dplyr::filter(`NEPC (n=122)` == 1)
+
+#NEPC genes from Beltran et al. Nature Medicine 2016
+nepc <- read_csv(file = "/Users/ds/Desktop/Supplement/nepc_genes.csv",col_names = T)
+
+#Z-score for each signature
+Beltran =  gsva(t(mcrpc_rna), gset.idx.list = list(c(nepc$`HGNC ID`)), method = 'zscore')
+Ramnarine =  gsva(t(mcrpc_rna), gset.idx.list = list(unique(nepc_lnc$lncRNA)), method = 'zscore')
+Single_cell = gsva(t(mcrpc_rna), gset.idx.list = list(c(sc_sig, adeno_sig)), method = 'zscore')
+SHH = gsva(t(mcrpc_rna), gset.idx.list = list(dplyr::filter(gs, gs_name == "HALLMARK_HEDGEHOG_SIGNALING")$gene_symbol), method = 'zscore')
+
+#Create dataframe using deep RNA-seq data on mCRPC - 71 adeno and 3 sc samples
+df <- data.frame(sample_id = colnames(Beltran), Beltran.et.al = t(Beltran), Ramnarine.et.al = t(Ramnarine), Single.cell = t(Single_cell), SHH = t(SHH)) %>% merge(anno) 
+mets <- df  %>% mutate(Histology = disease_type_SIG_GEX) %>% dplyr::select(c(sample_id, Beltran.et.al,Ramnarine.et.al, Single.cell, Histology )) 
+
+#Plot correlation
+p <- mets %>% dplyr::select(c(Beltran.et.al, Ramnarine.et.al, Single.cell)) %>% gather(key = "Signature" , value = "GEX", -Beltran.et.al ) %>% ggplot(aes(x = GEX, y = Beltran.et.al, color = Signature))  %>% facet(facet.by = "Signature") + geom_point() + geom_smooth(method = 'lm') + stat_cor(size = 7) + scale_color_manual(values = c("navy", 'darkred')) + theme_classic() + theme( text = element_text(size = 20),)
+
+pdf("/Users/ds/Desktop/plot.pdf", width = 10)
+p
+dev.off()
+
+
+```
+
+
+
+#AUC/ROC ANALYSIS
+```{r}
+#Get scores as predictions and histology as label
+predictions <- mets$Ramnarine.et.al
+labels <- mets$Histology
+#Create ROC object and AUC curves
+rocobj1 <- roc(labels, predictions, direction = "<")
+auc1 <- round(auc(labels, predictions, direction = "<"),2)
+
+predictions <- mets$Single.cell
+rocobj2 <- roc(labels, predictions, direction = "<")
+auc2 <- round(auc(labels, predictions, direction = "<"),2)
+
+
+predictions <- mets$Beltran.et.al
+rocobj3 <- roc(response = labels,predictor =  predictions, direction = ">" )
+auc3 <- round(auc(labels, predictions, direction = ">"),2)
+
+
+#Plot ROC curves
+p <- ggroc(list(Ramnarine.et.al = rocobj1, Single.cell = rocobj2 ), size = 1)+ scale_color_manual(values = c("navy", "darkred", "darkgreen"), name = "Signature", labels = c(paste0("Ramnarine AUC= ", auc1), paste0("Single cell AUC=", auc2), paste0("Beltran AUC=", auc3)) ) + theme_classic() + ggtitle('AUC analysis of 71 CRPC-adeno and 3 CRPC-small cell') + theme( text = element_text(size = 20),)
+
+
+```
+
+
+
