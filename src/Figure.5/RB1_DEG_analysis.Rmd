@@ -157,15 +157,26 @@ sig.down <- rbs$`Low-expressed in RB1-loss:` %>% na.omit()
 #Identify RB1 loss TME-lncRNAs - remove tumor, unknown and erythroid genes (highly proliferative)
 tme.up <- bulk_deg %>% dplyr::filter(logFC > 0 & (!Cluster %in% c("tumor", "Unknown", "erythroid")) ) %>% .$Genes
 #All RB1 loss lncRNAs
-#up <- bulk_deg %>% dplyr::filter(logFC > 0 & Genes %in% linc$gene.name) %>% .$Genes
-up <- bulk_deg %>% dplyr::filter(logFC > 0 & Genes %in% pcg$gene.name) %>% .$Genes
+up <- bulk_deg %>% dplyr::filter(logFC > 0 & Genes %in% linc$gene.name) %>% .$Genes
+#up <- bulk_deg %>% dplyr::filter(logFC > 0 & Genes %in% pcg$gene.name) %>% .$Genes
 #Identify RB1 loss Pca-lncRNAs 
 tumor.down <- bulk_deg %>% dplyr::filter(logFC < 0 & (Cluster %in% c("tumor")) ) %>% .$Genes
+
+
+
+
+bulk_deg %>% dplyr::filter(logFC < 0 & (!Cluster %in% c("tumor", "Unknown", "erythroid")) ) 
+
+
+bulk_deg %>% dplyr::filter(logFC > 0 & (Cluster %in% c("tumor")) )
+
+
 ```
 
 
 #SURVIVAL ANALYSIS
 ```{r}
+
 #Score lncrna signatures using combined z-score method
 gsva.es <- gsva(t(mcrpc_rna), gset.idx.list = list(tme.up), method = 'zscore')
 df <- t(gsva.es) %>% data.frame(sample_id = row.names(.), TME.lncRNA.activity = .)
@@ -180,11 +191,16 @@ df <- df %>% mutate(Group = as.factor(ntile(Pca.lncRNA.activity, 2)))
 
 #Univariate analysis of OS with signature activity
 #p1 <- coxph(Surv(time =OS.mCRPC , event = Event)~ Group, data = df) %>% ggforest(fontsize = 1)
-p2 <- coxph(Surv(time =OS.mCRPC , event = Event)~ Pca.lncRNA.activity, data = df) %>% ggforest(fontsize = 2)
+p2 <- coxph(Surv(time =OS.mCRPC , event = Event)~ TME.lncRNA.activity, data = df) %>% ggforest(fontsize = 2)
 
 #Multivariate analysis of OS with signature activity
 #p3 <-coxph(Surv(time =OS.mCRPC , event = Event)~ Group  +ECOG.PS + PSA.At.Biopsy+ LDH.at.biopsy + ALP + Hemoglobin.at.biopsy + Disease.Site + Enzalutamide.resistant  , data = df) %>% ggforest(fontsize = 1) 
-p4 <- coxph(Surv(time =OS.mCRPC , event = Event)~ Pca.lncRNA.activity  +ECOG.PS + PSA.At.Biopsy+ LDH.at.biopsy + ALP + Hemoglobin.at.biopsy + Disease.Site + Enzalutamide.resistant  , data = df) %>% ggforest(fontsize = 2)
+p4 <- coxph(Surv(time =OS.mCRPC , event = Event)~ TME.lncRNA.activity  +ECOG.PS + PSA.At.Biopsy+ LDH.at.biopsy + ALP + Hemoglobin.at.biopsy + Disease.Site + Enzalutamide.resistant  , data = df,singular.ok = F ) %>% ggforest(fontsize = 2)
+
+coxph(Surv(time =OS.mCRPC , event = Event)~  +ECOG.PS + PSA.At.Biopsy+ LDH.at.biopsy + ALP + Hemoglobin.at.biopsy + Disease.Site + Enzalutamide.resistant  + TME.lncRNA.activity , data = df) %>% ggforest()
+
+
+coxph(Surv(time =OS.mCRPC , event = Event)~  +ECOG.PS + PSA.At.Biopsy+ LDH.at.biopsy + ALP + Hemoglobin.at.biopsy + Disease.Site + Enzalutamide.resistant   , data = df) %>% ggforest()
 
 
 
@@ -193,8 +209,8 @@ pdf("/Users/ds/Desktop/plot.pdf", width = 20, height = 20)
 grid.arrange(p2, p4, ncol = 1)
 dev.off()
 
+p4
 
-df
 ```
 
 

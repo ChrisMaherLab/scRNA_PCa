@@ -220,6 +220,7 @@ dss <- data.frame(linc, dss[nearest(x =  GRanges(regions), subject = dss),] ) %>
 #Plotting - DMR cutoff of 5% and logFC cutoff of 1
 plot <- dss %>% ggplot(aes(x = Diff * 100, y = logFC, color = Cluster, label= gene.name, alpha = Sig)) + geom_point(size= 1) + geom_vline(xintercept = c(-5,5), linetype = "dashed")  + geom_hline(yintercept = c(-1,1), linetype = "dashed") + geom_text_repel(data = dplyr::filter(dss, Sig %in% c("A", "B") & Cluster != "Unknown"), force =10, size = 5) + scale_alpha_manual(values = c(1,1,0.5))  + ylab("logFC mCRPC v.s. PRAD") + xlab("Methylation difference mCPRC - PRAD") + scale_color_manual(values = c("purple", "orange", "red", "black", "darkgreen", "navy", "grey")) + theme_classic() + theme( text = element_text(size = 25))
 ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = plot, width = 15, height = 7)
+ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = plot, width = 10, height = 10)
 
 plot
 ```

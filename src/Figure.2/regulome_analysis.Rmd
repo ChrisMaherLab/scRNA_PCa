@@ -261,7 +261,23 @@ p
 dev.off()
 
 
-p
+pca_motif
+motif
+
+```
+
+#MISC
+```{r}
+
+t <- read.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/DSS_mCRPC_PRAD.bedGraph", sep = "\t")
+
+t %>% mutate(V1 = gsub(pattern = "chr", "", x = V1)) %>%  write.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/DSS_mCRPC_PRAD.bedGraph",quote = F, sep = "\t",row.names = F, col.names = F)
+
+
+c <- read.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/hg38.chrom.sizes", sep = "\t")
+
+c %>% mutate(V1 = gsub(pattern = "chr", "", x = V1)) %>%  write.table(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/results/chrom.sizes",quote = F, sep = "\t",row.names = F, col.names = F)
+
 ```
 
 

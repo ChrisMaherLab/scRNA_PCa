@@ -244,7 +244,9 @@ pdf("/Users/ds/Desktop/plot.pdf", width = 10)
 p2
 dev.off()
 
-p1
+final_markers %>% View()
+
+
 ```
 
 

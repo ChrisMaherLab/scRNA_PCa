@@ -13,6 +13,7 @@ library(BSgenome.Hsapiens.UCSC.hg38)
 library(pROC)
 library(edgeR)
 library(Signac)
+library(GSVA)
 ```
 
 
@@ -36,6 +37,8 @@ sc_pcg_deg <- sc_deg %>% dplyr::filter(Genes %in% pcg$gene.name)
 sc_deg <- sc_deg %>% dplyr::filter(Genes %in% linc$gene.name)
 
 
+
+sc_deg %>% dplyr::arrange(avg_log2FC.x)
 ```
 
 
@@ -180,6 +183,8 @@ p <- df %>% merge(meta) %>% mutate(Type = ifelse(Type == "tSCNC", "SCNC", "Adeno
 
 ggsave(filename = "/Users/ds/Desktop/plot.pdf", plot = p, )
 
+
+df %>% merge(meta) %>% mutate(Type = ifelse(Type == "tSCNC", "SCNC", "Adeno")) %>% dplyr::select(c(Sample, SCNC.lncRNAs, Adeno.lncRNAs, Type)) %>% .$Type %>% table()
 ```
 
 
@@ -241,4 +246,10 @@ p <- ggroc(list(Ramnarine.et.al = rocobj1, Single.cell = rocobj2 ), size = 1)+ s
 ```
 
 
+
+```{r}
+
+
+
+```
 

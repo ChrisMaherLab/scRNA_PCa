@@ -1,0 +1,35 @@
+---
+title: "DEG of Pca lncRNAs in mCRPC and NAT"
+output: html_notebook
+---
+
+```{r}
+
+mcrpc <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/He_scRNA/He_mCRPC.rds")
+Idents(mcrpc) <- "supercluster.for.LDSC.SEG"
+mcrpc <- subset(mcrpc, idents = "tumor")
+
+mcrpc@meta.data
+nat <- readRDS(file = "/Users/ds/Desktop/dge_E.rds")
+
+Idents(nat) <- "malignancy"
+nat@meta.data
+nat <- subset(nat, idents = "Non-Malignant")
+
+
+
+pca <- merge(x = mcrpc, y = nat)
+
+pca$cell <- ifelse(pca$supercluster.for.LDSC.SEG == "tumor", "tumor", "NAT")
+
+
+deg <- FindAllMarkers(object = pca, only.pos = T, verbose = T)
+
+
+deg[pca_lncrna,]
+
+
+
+write.csv(x = deg, file = "/Users/ds/Desktop/")
+```
+

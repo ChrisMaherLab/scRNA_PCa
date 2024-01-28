@@ -85,7 +85,7 @@ b <- bmet[pcg$gene.name,] %>% GetAssayData() %>% colMeans()
 p <- data.frame(LncRNA = a, Protein.coding = b) %>% gather(key = "Type", value = "Average.expression") %>% ggplot(aes(x = Average.expression, color = Type)) + stat_ecdf(size = 2) + scale_color_manual(values  = c("navy", "darkred")) + theme_classic() + theme(text = element_text(size = 20))
 
 
-p
+
 ```
 
 
@@ -96,8 +96,6 @@ p
 markers <- FindAllMarkers(object = bmet[row.names(bmet) %in% linc$gene.name,], only.pos = T, verbose = T)
 markers <- markers  %>% dplyr::filter(pct.1 > 0.1 & p_val_adj < 0.1 & avg_log2FC> 1) #Filter percent diff, logFC, and adj P value
 markers <- markers[!duplicated(markers$gene),]#Filter duplicates
-
-View(markers)
 
 #Find cell-type enriched pcgs in He et al. 
 pcg_markers <- FindAllMarkers(object = bmet[row.names(bmet) %in% pcg$gene.name], only.pos = T, verbose = T)
@@ -229,8 +227,8 @@ notpca_lncrna_ds <- sample(notpca_lncrna, length(pca_lncrna))#Downsampled versio
 other_lncrna <- linc %>% dplyr::filter(!gene.name %in% final_markers$gene) %>% .$gene.name
 other_lncrna_ds <- sample(other_lncrna, length(pca_lncrna))#Downsampled version
 
-
-
+pca_lncrna %>% paste0(collapse = " ")
+notpca_lncrna %>% paste0(collapse = " ")
 ```
 
 
@@ -294,6 +292,7 @@ dev.off()
 
 
 ```
+
 
 
 

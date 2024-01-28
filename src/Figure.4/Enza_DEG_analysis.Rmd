@@ -90,7 +90,7 @@ bulk_deg <- topTable(efit, number = Inf, coef = 1) %>% data.frame(Genes = row.na
 #DE lncRNAs - FDR 25% and abs logFC > 1
 bulk_deg <- bulk_deg %>% dplyr::filter(adj.P.Val < 0.25 & abs(logFC) > 1) %>% left_join( y = final_markers, by = c("Genes" = "gene"))
 #DE protein coding genes - FDR 25% and abs logFC > 1
-bulk_deg <- bulk_deg %>% dplyr::filter(adj.P.Val < 0.25 & abs(logFC) > 1) %>% left_join( y = pcg_markers, by = c("Genes" = "gene"))
+#bulk_deg <- bulk_deg %>% dplyr::filter(adj.P.Val < 0.25 & abs(logFC) > 1) %>% left_join( y = pcg_markers, by = c("Genes" = "gene"))
 ```
 
 
@@ -110,6 +110,8 @@ ggsave(plot = plot, filename = "/Users/ds/Desktop/plot.pdf", height = 5)
 #AR-upregulated pca-lncRNAs
 ar_lncrna <- bulk_deg %>% dplyr::filter( (logFC >0) & cluster == 'tumor') %>% .$Genes
 
+
+ar_lncrna
 ```
 
 
@@ -158,7 +160,7 @@ lcm <- lcm[!duplicated(lcm$Gene),]
 row.names(lcm) <- lcm$Gene
 lcm <- lcm[,-1]
 lcm <- as.matrix(lcm) %>% log1p()
-
+lcm[rownames(lcm) %in% ar_lncrna,]
 
 #Add metadata
 meta <- read_csv(file = "/Users/ds/Desktop/projects/data/anno/LCM_enza_WCDT_meta.csv", col_names = c("Patient.ID", "Timepoint", "Biopsy.site", "Same.lesion", "PSA", "TOS", "AR.VIPER", "AR.GEX", "Aggarwal", "Labrecque" ))

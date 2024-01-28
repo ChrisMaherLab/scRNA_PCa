@@ -1,0 +1,95 @@
+---
+title: "Gene plot of RMST (NEPC associated lncRNA) - Supp"
+output: html_notebook
+---
+#LOAD LIBRARIES
+```{r}
+library(Gviz)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(Signac)
+library(tidyverse)
+library(EnsDb.Hsapiens.v86)
+```
+
+
+#OBTAIN GENE MODEL FOR RMST
+```{r}
+GOI <- "RMST"
+chr <- "chr12"
+Geneid <- 196475 
+target <- EnsDb.Hsapiens.v86 %>% ensembldb::filter(~ symbol == GOI) %>% genes()
+```
+
+#READ IN DSS DMR REGIONS
+```{r}
+dss <- read_csv(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis//results/DSS_mCRPC_BN.csv", col_names = c("chrom", "start", "end", "Diff", "Stat"))
+dss$chrom <- paste0("chr", dss$chrom)
+dss <- dss %>% dplyr::filter(chrom == chr) %>% dplyr::select(-Stat) %>% mutate(Diff = Diff * 100) %>% GRanges()
+dTrack <- DataTrack(dss, name = "Methylation", background.title = "DarkOrchid4", fill = "DarkOrchid4")
+#plotTracks(list(dTrack), from = start(target), to = end(target), type = c("histogram"), ylim = c(-30,0))
+
+
+
+```
+
+
+
+#OBTAIN TRANSCRIPTS DATABASE
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene %>% exons(columns=c("GENEID", "EXONID", "TXNAME" ))
+
+
+
+txdb <- S4Vectors::expand(txdb, c("GENEID", "EXONID", "TXNAME"))
+```
+
+
+#OBTAIN GENE REGIONS FOR COLCA1 AND REGULATORY ELEMENTS
+```{r}
+#Gene model
+gene <- txdb[txdb$GENEID == Geneid] %>% data.frame()
+colnames(gene) <- c("chromosome", "start", "end", "width", "strand", "gene", "exon", "transcript")
+
+
+#HMR
+hmr <- read_tsv(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/hmr.bed", col_names  = c("chrom", "start", "end"))
+hmr <- hmr %>% dplyr::filter(chrom == chr) %>% dplyr::select(c(chrom, start, end)) %>% GRanges()
+
+
+#ARBS
+metarbs <- read_tsv(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/AR.chip.hg38.bed", col_names = c("chrom", "start", "end"))
+metarbs <- metarbs %>% dplyr::filter(chrom == chr) %>% dplyr::select(c(chrom, start, end)) %>% GRanges()
+
+#FOXBS
+metfrbs <- read_tsv(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/FOXA1.chip.hg38.bed", col_names = c("chrom", "start", "end"))
+metfrbs <- metfrbs %>% dplyr::filter(chrom == chr) %>% dplyr::select(c(chrom, start, end)) %>% GRanges()
+
+#H3k27ac
+h3ac <- read_tsv(file = "/Users/ds/Desktop/projects/mCRPC_lncRNA_analysis/data/H3K27ac.chip.hg38.bed", col_names = c("chr", "start", "end"))
+h3ac <- h3ac %>% dplyr::select(c(chr, start, end)) %>% GRanges()
+h3ac <- subsetByOverlaps(x = h3ac, ranges = GRanges(dplyr::filter(linc, gene.name == GOI)))
+```
+
+
+#MAKE GENE PLOT
+```{r}
+#Plot
+grtrack <- GeneRegionTrack( genome = "hg38",range = gene, chromosome = chr , name = GOI, transcriptAnnotation = "transcript", background.panel = "lightyellow", background.title = "darkblue", fill = "darkblue", col = "darkblue")
+atrack <- AnnotationTrack(hmr, name = "HMR", background.title = "darkred",  background.panel ="lightgrey", fill = "darkred", col = "darkred")
+arbtrack <- AnnotationTrack(metarbs, name = "AR", background.title = "darkgreen" , background.panel = "lightgrey", fill = "darkgreen", col = "darkgreen")
+frbtrack <- AnnotationTrack(metfrbs, name = "FOXA1", background.title = "darkorange" , background.panel = "lightgrey", fill = "darkorange", col = "darkorange")
+atactrack <- AnnotationTrack(h3ac, name = "H3K27ac", background.title = "black" , background.panel = "lightgrey", fill = "black", col = "black" )
+gtrack <- GenomeAxisTrack()
+#itrack <- IdeogramTrack(genome = "hg38", chromosome = chr)
+pdf("/Users/ds/Desktop/plot.pdf", width = 10, height = 10)
+plotTracks(list(gtrack, dTrack,arbtrack,frbtrack, atactrack, atrack,grtrack), from = start(target) -10000, to = end(target) + 10000, type = "histogram",ylim = c(-50,0), sizes=c(1,2,1,1,1,1,2) ) 
+dev.off()
+
+
+jpeg("/Users/ds/Desktop/plot2.jpeg",)
+plotTracks(list(gtrack, dTrack,arbtrack,frbtrack, atactrack, atrack,grtrack), from = start(target) -10000, to = end(target) + 10000, type = "histogram",ylim = c(-50,0) , sizes=c(1,2,1,1,1,1,2)) 
+dev.off()
+
+
+```

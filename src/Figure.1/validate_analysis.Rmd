@@ -37,6 +37,9 @@ Idents(bmcrpc) <- "cells"
 scrna <- readRDS(file = "/Users/ds/Desktop/scRNA_datasets/dge_pca.rds")
 Idents(scrna) <- "ID_coarse"
 
+
+
+
 ```
 
 #FIND OVERLAPPING LNCRNAS ACROSS DATASETS
